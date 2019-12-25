@@ -1,3 +1,4 @@
+#from twitch import TwitchHelix
 from twitch import TwitchHelix
 import asyncpg
 import asyncio
@@ -10,6 +11,7 @@ class Collector:
         self.db_args = db_args
     async def __aenter__(self):
         self.dbconn = await asyncpg.connect(**self.db_args)
+        '''
         self.twitch_client = TwitchHelix(client_id=self.client_id)
         try:
             self.game_id_set = set(i["id"] for i in await self.dbconn.fetch("SELECT id FROM games"))
@@ -20,8 +22,10 @@ class Collector:
             self.streamer_id_set = set()
         self.lock = asyncio.Lock()
         return self
+        '''
     async def __aexit__(self, exc_type, exc, tb):
         await self.dbconn.close()
+
     async def init(self):
         try:
             await self.drop()
@@ -31,23 +35,36 @@ class Collector:
             await self.dbconn.execute("""
             CREATE TABLE streamers (
                 id BIGINT PRIMARY KEY,
-                name TEXT NOT NULL
+                name TEXT, 
+                login TEXT,
             );
             CREATE TABLE games (
                 id BIGINT PRIMARY KEY,
                 name TEXT,
                 box_art_url TEXT
             );
-            CREATE TABLE stream_snapshots (
-                id SERIAL PRIMARY KEY,
-                stream_id BIGINT,
+            CREATE TABLE streams (
+                id BIGINT PRIMARY KEY,
+                streamer_id BIGINT REFERENCES streamers (id),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            );
+            CREATE TABLE stream_states (
+                stream_id BIGINT REFERENCE streams (id),
+                game_id BIGINT REFERENCES games (id),
+                language TEXT, 
+                time TIMESTAMP NOT NULL DEFAULT NOW(),
+            );
+            CREATE TABLE stream_viewer_counts (
+                stream_id BIGINT REFERENCE streams (id),
+                time TIMESTAMP NOT NULL DEFAULT NOW(),
                 streamer_id BIGINT REFERENCES streamers (id),
                 game_id BIGINT REFERENCES games (id),
-                time TIMESTAMP NOT NULL DEFAULT NOW(),
                 language TEXT NOT NULL,
-                viewer_count INTEGER NOT NULL DEFAULT 0
+                viewer_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (stream_id, time)
             );
             """)
+
     async def drop(self):
         async with self.lock:
             await self.dbconn.execute("""
@@ -55,6 +72,7 @@ class Collector:
             DROP TABLE streamers; 
             DROP TABLE games; 
             """)
+
     async def run(self, num, interval):
         last = datetime.datetime.now()
         async with self.lock:

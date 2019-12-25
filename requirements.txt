@@ -1,1 +1,5 @@
-python-twitch-client
+#python-twitch-client
+twitch-python
+asyncpg
+aiohttp
+irc
