@@ -7,5 +7,5 @@ import asyncio
 app = Application()
 
 @app.route('/')
-async def home(request):
+async def index(request):
     return text(f'Hello, World! {datetime.utcnow().isoformat()}')

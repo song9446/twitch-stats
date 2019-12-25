@@ -11,7 +11,7 @@ class Collector:
     def __init__(self, client_id, db_args):
         self.client_id = client_id
         self.db_args = db_args
-        self.stream_snapshot_cache = {}
+        self.stream_change_cache = {}
     async def __aenter__(self):
         self.dbconn = await asyncpg.connect(**self.db_args)
         self.twitch_client = twitch.Helix(client_id = self.client_id, use_cache = False)
@@ -35,10 +35,10 @@ class Collector:
                 id BIGINT PRIMARY KEY,
                 name TEXT NOT NULL,
                 login TEXT NOT NULL,
-                profile_image_url TEXT, 
-                offline_image_url TEXT, 
-                broadcaster_type TEXT, 
-                description TEXT, 
+                profile_image_url TEXT,
+                offline_image_url TEXT,
+                broadcaster_type TEXT,
+                description TEXT,
                 type TEXT,
                 is_streaming BOOLEAN
             );
@@ -52,11 +52,12 @@ class Collector:
                 streamer_id BIGINT REFERENCES streamers (id),
                 started_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
-            CREATE TABLE stream_snapshots (
+            CREATE TABLE stream_changes (
                 stream_id BIGINT REFERENCES streams (id),
-                viewer_count INTEGER NOT NULL DEFAULT 0,
+                viewer_count INTEGER,
                 game_id BIGINT REFERENCES games (id),
-                language CHAR(2), 
+                language CHAR(2),
+                title TEXT,
                 time TIMESTAMP NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (stream_id, time)
             );
@@ -64,10 +65,10 @@ class Collector:
     async def drop(self):
         async with self.lock:
             await self.dbconn.execute("""
-            DROP TABLE stream_snapshots;
-            DROP TABLE streams; 
-            DROP TABLE games; 
-            DROP TABLE streamers; 
+            DROP TABLE stream_changes;
+            DROP TABLE streams;
+            DROP TABLE games;
+            DROP TABLE streamers;
             """)
     async def streamer_ids(self):
         async with self.lock:
@@ -76,41 +77,57 @@ class Collector:
         user = self.twitch_client.user(login).data
         async with self.lock:
             await self.dbconn.execute("""
-            INSERT INTO streamers 
+            INSERT INTO streamers
                 (id, name, login, profile_image_url, offline_image_url, broadcaster_type, description, type)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
             """, int(user["id"]), user["display_name"], user["login"], user["profile_image_url"], user["offline_image_url"], user["broadcaster_type"], user["description"], user["type"])
-    async def run(self, interval):
+    async def run(self, interval_seconds):
         last = datetime.datetime.now()
+        interval = datetime.timedelta(seconds=interval_seconds)
         while True:
             await self._collect()
             now = datetime.datetime.now()
-            await asyncio.sleep(interval - (now - last).total_seconds())
-            last = now
+            if now <= last + interval:
+                await asyncio.sleep((last + interval-now).total_seconds())
+            last = last + interval
     async def _collect(self):
         streams = await self._streams()
         await self._update_games(streams)
         now = datetime.datetime.now()
-        print(f"collect {len(streams)}")
         for stream in streams:
             if stream:
+                stream["id"] = int(stream["id"])
+                stream["game_id"] = int(stream["game_id"])
+                stream["viewer_count"] = int(stream["viewer_count"])
+                stream["user_id"] = int(stream["user_id"])
+                stream["started_at"] = datetime.datetime.fromisoformat(stream["started_at"][:-1])
                 async with self.lock:
-                    await self.dbconn.execute("""UPDATE streamers SET is_streaming = TRUE WHERE id = $1""", int(stream["id"]))
-                    self.stream_snapshot_cache[int(stream["id"])] = stream
-                    cache = self.stream_snapshot_cache.get(int(stream["user_id"]))
-                    if cache is not None or cache["id"] != stream["id"]:
+                    await self.dbconn.execute("""UPDATE streamers SET is_streaming = TRUE WHERE id = $1""", stream["id"])
+                    cache = self.stream_change_cache.get(stream["user_id"])
+                    if cache is None or cache["id"] != stream["id"]:
+                        self.stream_change_cache[stream["id"]] = stream
+                        cache = None
                         await self.dbconn.execute("""
-                            INSERT INTO streams 
+                            INSERT INTO streams
                             (id, streamer_id, started_at)
                             VALUES ($1, $2, $3)
                             ON CONFLICT (id) DO NOTHING; """,
-                            int(stream["id"]), int(stream["user_id"]), datetime.datetime.fromisoformat(stream["started_at"][:-1]))
-                        self.stream_snapshot_cache.get(int(cache["id"]))
-                    await self.dbconn.execute("""
-                        INSERT INTO stream_snapshots 
-                        (stream_id, time, game_id, viewer_count, language) 
-                        VALUES ($1, $2, $3, $4, $5);
-                        """, int(stream["id"]), now, int(stream["game_id"]) if stream["game_id"] else None, int(stream["viewer_count"]), stream["language"])
+                            stream["id"], stream["user_id"], stream["started_at"])
+                    ALL_KEYS = ["game_id", "viewer_count", "language", "title"]
+                    update_keys = []
+                    if cache is None:
+                        update_keys = ALL_KEYS
+                    else:
+                        update_keys = [key for key in ALL_KEYS if cache[key] != stream[key]]
+                    if update_keys:
+                        print(update_keys)
+                        print(f"update {stream}")
+                        await self.dbconn.execute(f"""
+                            INSERT INTO stream_changes
+                            ({", ".join(update_keys)}, stream_id, time)
+                            VALUES ( {", ".join( "$" + str(i+1) for i in range(len(update_keys)+2))} );
+                            """, *[stream[i] for i in update_keys], stream["id"], now)
+                        self.stream_change_cache[stream["user_id"]] = stream
             else:
                 async with self.lock:
                     await self.dbconn.execute("""UPDATE streamers SET is_streaming = FALSE WHERE id = $1""", int(stream["id"]))
@@ -126,7 +143,6 @@ class Collector:
         return [i.data for i in streams]
     async def _update_games(self, streams):
         new_game_id_set = set()
-        print(streams)
         for stream in streams:
             if stream["game_id"] and (int(stream["game_id"]) not in self.game_id_set):
                 new_game_id_set.add(int(stream["game_id"]))
@@ -144,9 +160,9 @@ class Collector:
 #asyncio.run(run(500, 60))
 async def main(op):
     client_id = "6zqny3p0ft2js766jptev3mvp0ay51"
-    db_args = dict(user='postgres', 
-            password='Thelifeisonlyonce', 
-            database='twitch_stats', 
+    db_args = dict(user='postgres',
+            password='Thelifeisonlyonce',
+            database='twitch_stats',
             host='127.0.0.1')
     async with Collector(client_id, db_args) as collector:
         print(op)
@@ -157,9 +173,14 @@ async def main(op):
         elif op == "run":
             await collector.run(60)
         elif op == "test":
-            #await collector.add_streamer("saddummy")
-            #await collector.add_streamer("rhdgurwns")
-            await collector.run(60)
+            try:
+                await collector.add_streamer("saddummy")
+                await collector.add_streamer("rhdgurwns")
+                await collector.add_streamer("zilioner")
+                await collector.add_streamer("trackingthepros")
+            except Exception as e:
+                pass
+            await collector.run(560)
 
 if __name__ == "__main__":
     import sys
