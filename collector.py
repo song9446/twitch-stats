@@ -18,7 +18,7 @@ class ChatterManager:
         self.chatters_accumulate = {}
         #self.updated = {}
         self.migrations = {}
-    async def update(self, streamer_logins):
+    async def update(self, streamer_logins, last_session_file=".chatter_manager_session"):
         new_chatters = {}
         migrations_for_user = {}
         for login in streamer_logins:
@@ -248,10 +248,11 @@ class Collector:
 #asyncio.run(run(500, 60))
 async def main(op):
     client_id = "6zqny3p0ft2js766jptev3mvp0ay51"
-    db_args = dict(user='postgres',
-            password='Thelifeisonlyonce',
+    db_args = dict(user='dbmasteruser',
+            password='04zDuS5pq2uN6yH:&NvbU.{&5B4)xg7=',
             database='twitch_stats',
-            host='127.0.0.1')
+            host='ls-98524b0fb0c06c3883fc04035ec696d992806b8d.cheedxeegdzw.ap-northeast-2.rds.amazonaws.com',
+            port=5432)
     async with Collector(client_id, db_args) as collector:
         print(op)
         if op == "init":
@@ -264,6 +265,7 @@ async def main(op):
             #await test_chatter_manager()
             #exit()
             try:
+                '''
                 await collector.add_streamer("saddummy")
                 await collector.add_streamer("rhdgurwns")
                 await collector.add_streamer("zilioner")
@@ -271,6 +273,7 @@ async def main(op):
                 await collector.add_streamer("wltn4765")
                 await collector.add_streamer("flurry1989")
                 await collector.add_streamer("velvet_7")
+                '''
             except Exception as e:
                 pass
             await collector.run(60)
