@@ -3,3 +3,7 @@ twitch-python
 asyncpg
 aiohttp
 irc
+tqdm==4.19.5
+lapjv
+pillow
+scipy
