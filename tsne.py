@@ -5,7 +5,45 @@ from tqdm import tqdm
 from scipy.spatial.distance import cdist
 from lapjv import lapjv
 from PIL import Image
+import umap as UMAP
 
+MAX = 10000.*10000.*100.
+def umap(distance_matrix):
+    v = np.minimum(MAX, distance_matrix)
+    n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
+    v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
+    v = UMAP.UMAP(metric="precomputed").fit_transform(v)
+    return v
+    #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
+def grid(poses):
+    v = poses
+    v -= v.min(axis=0)
+    v /= v.max(axis=0)
+    out_dim = int(np.sqrt(len(v)))
+    grid = np.dstack(np.meshgrid(np.linspace(0, 1, out_dim), np.linspace(0, 1, out_dim))).reshape(-1, 2)
+    #grid = np.dstack(np.meshgrid(np.linspace(0, out_dim-1, out_dim), np.linspace(0, out_dim-1, out_dim))).reshape(-1, 2)
+    cost_matrix = cdist(v, grid, "sqeuclidean").astype(np.float32)
+    cost_matrix = cost_matrix * (100000 / cost_matrix.max())
+    row_asses, col_asses, _ = lapjv(cost_matrix)
+    grid_jv = grid[row_asses]
+    return np.round(grid_jv*(out_dim-1)).astype(np.int)
+    #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
+def umap_grid(distance_matrix):
+    v = np.minimum(MAX, distance_matrix)
+    n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
+    v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
+    v = UMAP.UMAP(metric="precomputed").fit_transform(v)
+    v -= v.min(axis=0)
+    v /= v.max(axis=0)
+    out_dim = int(np.sqrt(n))
+    grid = np.dstack(np.meshgrid(np.linspace(0, 1, out_dim), np.linspace(0, 1, out_dim))).reshape(-1, 2)
+    #grid = np.dstack(np.meshgrid(np.linspace(0, out_dim-1, out_dim), np.linspace(0, out_dim-1, out_dim))).reshape(-1, 2)
+    cost_matrix = cdist(v, grid, "sqeuclidean").astype(np.float32)
+    cost_matrix = cost_matrix * (100000 / cost_matrix.max())
+    row_asses, col_asses, _ = lapjv(cost_matrix)
+    grid_jv = grid[row_asses]
+    return np.round(grid_jv*(out_dim-1)).astype(np.int)
+    #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
 
 def tsne_grid(similarity_matrix, max_iter=1000):
     v = similarity_matrix
@@ -24,6 +62,7 @@ def tsne_grid(similarity_matrix, max_iter=1000):
     return np.round(grid_jv*(out_dim-1)).astype(np.int)
     #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
 
+'''
 def grid(similarity_matrix, images, output_img_size):
     v = TSNE(similarity_matrix, no_dims=2)
     v -= v.min(axis=0)
@@ -56,6 +95,7 @@ def grid(similarity_matrix, images, output_img_size):
             image[y0 + dy:y0 + dy + y1,x0 + dx:x0 + dx + x1] = small_img
             y += 1
     return image
+'''
 
 def h_beta(d=np.array([]), beta=1.0):
     """Compute the perplexity and the P-row for a specific value of the precision of a Gaussian distribution."""
