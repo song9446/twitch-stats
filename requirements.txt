@@ -10,3 +10,5 @@ scipy
 tenacity
 hdbscan
 umap-learn
+python-telegram-bot
+aiostream

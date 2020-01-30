@@ -1,6 +1,7 @@
 # shameless copy from https://github.com/YontiLevin/Embeddings2Image/blob/master/e2i/Maatens_tsne.py
 
 import numpy as np
+import sklearn
 from tqdm import tqdm
 from scipy.spatial.distance import cdist
 from lapjv import lapjv
@@ -10,27 +11,39 @@ import umap as UMAP
 MAX = 10000.*10000.*100.
 def umap(distance_matrix):
     v = np.minimum(MAX, distance_matrix)
-    n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
-    v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
+    #n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
+    #v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
     v = UMAP.UMAP(metric="precomputed").fit_transform(v)
     return v
     #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
-def grid(poses):
+def tsne(distance_matrix):
+    #v = 1/distance_matrix
+    v = np.minimum(MAX, distance_matrix)
+    #n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
+    #v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=0)
+    v = sklearn.manifold.TSNE(metric="precomputed").fit_transform(v)
+    #v = TSNE(v, no_dims=2, max_iter=max_iter)
+    return v
+def grid(poses, padding_ratio=4/3):
     v = poses
     v -= v.min(axis=0)
     v /= v.max(axis=0)
-    out_dim = int(np.sqrt(len(v)))
+    #out_dim = int(np.sqrt(len(v)))
+    out_dim = int(np.ceil(np.sqrt(len(poses)*padding_ratio)))
+
     grid = np.dstack(np.meshgrid(np.linspace(0, 1, out_dim), np.linspace(0, 1, out_dim))).reshape(-1, 2)
     #grid = np.dstack(np.meshgrid(np.linspace(0, out_dim-1, out_dim), np.linspace(0, out_dim-1, out_dim))).reshape(-1, 2)
-    cost_matrix = cdist(v, grid, "sqeuclidean").astype(np.float32)
+    cost_matrix = cdist(v, grid, "sqeuclidean")
     cost_matrix = cost_matrix * (100000 / cost_matrix.max())
+    cost_matrix = np.pad(cost_matrix, ((0, out_dim*out_dim - len(poses)), (0, 0)), mode='constant', constant_values=0).astype(np.float32)
     row_asses, col_asses, _ = lapjv(cost_matrix)
-    grid_jv = grid[row_asses]
+    grid_jv = grid[row_asses[:len(poses)]]
+    #grid_jv = grid[row_asses]
     return np.round(grid_jv*(out_dim-1)).astype(np.int)
     #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
-def umap_grid(distance_matrix):
+def umap_grid(distance_matrix, padding_ratio=3/2):
     v = np.minimum(MAX, distance_matrix)
-    n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
+    n = np.square(int(np.ceil(np.sqrt(v.shape[0])))*padding_ratio)
     v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
     v = UMAP.UMAP(metric="precomputed").fit_transform(v)
     v -= v.min(axis=0)
@@ -171,8 +184,10 @@ def test():
         [0, 0, 0, 0, 1],
         [0, 0, 0, 1, 0],
         ])
+    poses = umap(sim)
+    print(poses)
 
-    print(tsne_grid(sim))
+    print(grid(poses))
 
 
 if __name__ == "__main__":

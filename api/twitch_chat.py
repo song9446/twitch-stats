@@ -3,7 +3,6 @@ import time
 import aiohttp
 import random 
 import collections
-from tenacity import retry, stop_after_attempt
 
 class Message:
     # How messages are parsed, and what the Message class attributes represent:
@@ -143,7 +142,6 @@ class Client:
     async def close(self):
         await self.ws.close()
         await self.session.close()
-    @retry(stop=stop_after_attempt(100))
     async def __init(self, channel):
         self.session = aiohttp.ClientSession()
         self.ws = await self.session.ws_connect("wss://irc-ws.chat.twitch.tv/")
