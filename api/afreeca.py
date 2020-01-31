@@ -95,7 +95,8 @@ class ChatManager:
                                     else:
                                         self.chatters[msg.bjid].difference_update(msg.users)
                                 elif msg.svc == afreeca_chat.SVC_FLAGCHANGE:
-                                    self.chatters[msg.bjid].remove(msg.user)
+                                    if msg.bjid in self.chatters:
+                                        self.chatters[msg.bjid].remove(msg.user)
                                     self.chatters[msg.bjid].add(msg.user)
                                 #self.chat_counts.setdefault(msg.channel, 0)
                                 #self.chat_counts[msg.channel] += 1
