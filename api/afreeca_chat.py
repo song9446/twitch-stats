@@ -382,7 +382,7 @@ class Client:
             if self.retry > 0:
                 self.retry -= 1
                 await self.close()
-                await self.__init(self.bj_id, self.broad_no)
+                await self.init(self.bj_id, self.broad_no)
                 return await self.__anext__()
             else:
                 raise StopAsyncIteration
