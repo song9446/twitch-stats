@@ -1,4 +1,4 @@
-from tenacity import retry, stop_after_attempt
+from tenacity import retry, stop_after_attempt, retry_if_exception_type
 import base64
 import asyncio
 import json
@@ -317,6 +317,7 @@ class Client:
         c = Client()
         await c.init(bjid, bno)
         return c
+    @retry(stop=stop_after_attempt(10), retry=retry_if_exception_type(asyncio.TimeoutError))
     async def init(self, bjid, bno):
         self.bjid = bjid
         self.bno = bno

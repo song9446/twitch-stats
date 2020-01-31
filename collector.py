@@ -4,7 +4,7 @@ import time
 import asyncpg
 import pickle
 from api import API, Stream, User
-from api import twitch
+from api import afreeca
 
 from util import split_into_even_size, ExpiredSet, MergedStream
 import telegram_bot
@@ -44,7 +44,10 @@ class AdvancedStatisticsManager:
             except Exception as e:
                 print(repr(e))
     def save_session(self):
-        copyfile(self.session_file_path, self.session_file_path + ".back")
+        try:
+            copyfile(self.session_file_path, self.session_file_path + ".back")
+        except FileNotFoundError as e:
+            pass
         with open(self.session_file_path, "wb") as f:
             session = {"chatters_accumulates": self.chatters_accumulates}
             pickle.dump(session, f, protocol=-1)
@@ -63,6 +66,8 @@ class AdvancedStatisticsManager:
     def calculate_statistics(self):
         print("start calculate statistics..", datetime.datetime.now())
         ids = [id for id in self.chatters_accumulates.keys()]
+        if not ids:
+            return None, None, None
         similarity_matrix = np.zeros((len(ids), len(ids)))
         intersections_matrix = np.zeros((len(ids), len(ids)))
         for i in range(len(ids)):
@@ -116,6 +121,7 @@ class Collector:
     async def run(self, interval_seconds=60, interval_seconds_for_advacned_statistics_calculate=300):
         self.dbconn = await asyncpg.connect(**self.db_args)
         self.streaming_streamers = set(User(**i) for i in await self.dbconn.fetch("SELECT id, name, login, profile_image_url, offline_image_url, broadcaster_type, description, type FROM streamers WHERE is_streaming = TRUE"))
+        self.user_login_to_id = {i["login"]: i["id"] for i in await self.dbconn.fetch("SELECT id, login FROM streamers")}
         self.average_viewer_counts = {}
         time_elapsed = interval_seconds
         interval = datetime.timedelta(seconds=interval_seconds)
@@ -168,6 +174,15 @@ class Collector:
         print("start collect streams..", datetime.datetime.now())
         streams = await self.api.streams()
         print("streams collect end", datetime.datetime.now())
+        not_recorded_users = set(s.user for s in streams if s.user.login not in self.user_login_to_id)
+        res = await self.dbconn.fetch("""
+            INSERT INTO streamers (login, name) (SELECT unnest($1::TEXT[]) as login, unnest($2::TEXT[]) as name)
+            RETURNING id; 
+            """, tuple(u.login for u in not_recorded_users), tuple(u.name for u in not_recorded_users))
+        for record, user in zip(res, not_recorded_users):
+            self.user_login_to_id[user.login] = record["id"]
+        for s in streams:
+            s.user.id = self.user_login_to_id[s.user.login]
         users = set(s.user for s in streams)
         games = set(s.game for s in streams if s.game)
         await self.dbconn.executemany("""
@@ -221,23 +236,23 @@ async def main(op):
                    bearer_token="pcjch55ezhaulaptylu85iq2ni4x6t")
     db_args = dict(user='postgres',
             password='Thelifeisonlyonce',
-            database='twitch_stats',
+            database='afreeca_stats',
             host='133.130.124.159',
             port=5432)
     if op == "run":
         print(op)
-        telegram_bot.send_message("start tsu.gg twitch stream statistics collector")
+        #telegram_bot.send_message("start uga.gg afreeca stream statistics collector")
         while True:
             try:
-                api = twitch.API(client_args)
+                api = afreeca.API()
                 collector = Collector(api, db_args)
-                await collector.run(60, 60)
+                await collector.run(300, 300)
             except Exception as e:
                 raise e
-                telegram_bot.send_message("restart collector due to:")
+                telegram_bot.send_message("restart uga.gg collector due to:")
                 telegram_bot.send_message(repr(e))
                 time.sleep(180)
-        telegram_bot.send_message("collector shutdowned unexpecteadly!!")
+        telegram_bot.send_message("uga.gg collector shutdowned unexpecteadly!!")
     elif op == "test":
         pass
         #await collector._collect(60)

@@ -1,4 +1,4 @@
-from tenacity import retry, stop_after_attempt
+from tenacity import retry, stop_after_attempt, retry_if_exception_type
 import api
 import datetime
 import base64
@@ -107,14 +107,27 @@ class Client:
         c = Client()
         await c.init(bjid)
         return c
+    @retry(stop=stop_after_attempt(10), retry=(retry_if_exception_type(asyncio.TimeoutError) | retry_if_exception_type(aiohttp.ClientResponseError)))
     async def init(self, bjid):
         self.bjid = bjid
-        self.session = aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36"}, timeout=aiohttp.ClientTimeout(total=5))
+        self.session = aiohttp.ClientSession(
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/79.0.3945.130 Safari/537.36"}, 
+                cookies={"UserClipToolTip":"off", "AbroadChk": "FAIL", "AbroadVod": "FAIL"},
+                timeout=aiohttp.ClientTimeout(total=5))
         async with self.session.get(f"http://play.afreecatv.com/{bjid}/null") as res:
             html = await res.text()
+        if len(html) < 1000:
+            i, a = naive_parse(html, '</iframe><script>document.getElementById("f").src="', '"</script>')
+            a = a.replace('"+Date.now()+"', str(int(time.time()*1000)))
+            async with self.session.get(a, headers={ "Referer": "http://play.afreecatv.com/{bjid}/null" }) as res:
+                await res.text()
+            async with self.session.get(f"http://play.afreecatv.com/{bjid}/null", headers={ "Referer": a, }) as res:
+                html = await res.text()
         i, category = naive_parse(html, '"og:description" content="', " |")
         if i<=-1: 
             await self.close()
+            print(html[:3000])
+            print(bjid)
             raise Exception("cannot fetch category from html")
         i, bno = naive_parse(html, "nBroadNo = ", ";", i)
         if i<=-1:

@@ -1,4 +1,4 @@
-from tenacity import retry, stop_after_attempt
+from tenacity import retry, stop_after_attempt, retry_if_exception_type
 import json
 import pickle
 import api
@@ -260,6 +260,7 @@ class API(api.API):
     async def _get(self, url):
         async with self.session.get(url, timeout=timeout) as res:
             return await res.text()
+    @retry(stop=stop_after_attempt(10), retry=retry_if_exception_type(asyncio.TimeoutError))
     async def _user(self, user_id):
         async with self.session.get(f"http://bjapi.afreecatv.com/api/{user_id}/station") as res:
             return json.loads(await res.text())
@@ -294,14 +295,14 @@ class API(api.API):
             chattings = [],
             ) for s in streams if s and s.main_pc_users >= 0]
         await self.chat_manager.wait_available()
-        self.chat_manager.extend([(s.user.id, s.id) for s in streams])
+        self.chat_manager.extend([(s.user.login, s.id) for s in streams])
         closed_clients = self.stream_manager.drain_closed_clients()
         await self.chat_manager.wait_available()
         self.chat_manager.substract([(s.bjid, s.bno) for s in closed_clients])
         chats = self.chat_manager.drain_chats()
         for s in streams:
-            s.chatters = (await self._chatters(s.user.id)) or []
-            s.chattings = chats.get(s.user.id) or []
+            s.chatters = (await self._chatters(s.user.login)) or []
+            s.chattings = chats.get(s.user.login) or []
             in_main_ch_room = (s.join_viewer_count == s.main_viewer_count)
             if in_main_ch_room:
                 s.chatter_count = round(s.viewer_count * ((len(s.chatters) / s.join_viewer_count) if s.join_viewer_count else 0))
