@@ -1,3 +1,4 @@
+from tenacity import retry, stop_after_attempt
 import asyncio
 import time
 import aiohttp
@@ -142,6 +143,7 @@ class Client:
     async def close(self):
         await self.ws.close()
         await self.session.close()
+    @retry(stop=stop_after_attempt(100))
     async def __init(self, channel):
         self.session = aiohttp.ClientSession()
         self.ws = await self.session.ws_connect("wss://irc-ws.chat.twitch.tv/")
@@ -202,7 +204,7 @@ class Client:
 
 async def test():
     from util import MergedStream
-    cs = [await Client.connect("handongsuk"), await Client.connect("saddummy"), await Client.connect("dogswellfish"), await Client.connect("flurry1989")]
+    cs = [await Client.connect("handongsuk"), await Client.connect("saddummy"), await Client.connect("dogswellfish"), await Client.connect("flurry1989"), await Client.connect("loltyler1")]
     merged = MergedStream(*cs)
     async for msg in merged:
         if msg: print(msg.type, msg.channel, msg.user, msg.message)

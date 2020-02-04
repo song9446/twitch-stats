@@ -1,14 +1,15 @@
 from tenacity import retry, stop_after_attempt
 import pickle
-import twitch
 import api
 from api import twitch_chat
+from api import twitch_stream
 import queue
 import asyncio
 import aiohttp
 import threading
 import time
 import datetime
+from shutil import copyfile
 from util import split_into_even_size, ExpiredSet, MergedStream
 
 class ChatManager:
@@ -92,17 +93,19 @@ class ChatManager:
         return chats
 
 class API(api.API):
-    def __init__(self, client_args, language="ko", session_file_path="twitch_api_session.pkl"):
+    async def gen(client_args, language="ko", session_file_path="twitch_api_session.pkl"):
+        self = API()
         self.session_file_path = session_file_path
         self.session = aiohttp.ClientSession()
         self.client_args = client_args
-        self.twitch_client = twitch.Helix(**self.client_args)
+        self.twitch_client = await twitch_stream.Helix.gen(**self.client_args)
         self.chat_manager = ChatManager()
         self.language = language
         self.user_by_id = {}
         self.game_by_id = {}
         self.load_session()
         self.streaming_users = set()
+        return self
     def load_session(self):
         try:
             with open(self.session_file_path, "rb") as f:
@@ -110,8 +113,15 @@ class API(api.API):
                 self.user_by_id = session["user_by_id"]
                 self.game_by_id = session["game_by_id"]
         except Exception as e:
-            print(repr(e))
+            try:
+                with open(self.session_file_path + ".back", "rb") as f:
+                    session = pickle.load(f)
+                    self.user_by_id = session["user_by_id"]
+                    self.game_by_id = session["game_by_id"]
+            except Exception as e:
+                print(repr(e))
     def save_session(self):
+        copyfile(self.session_file_path, self.session_file_path + ".back")
         with open(self.session_file_path, "wb") as f:
             session = {"user_by_id": self.user_by_id, "game_by_id": self.game_by_id}
             pickle.dump(session, f, protocol=-1)
@@ -125,9 +135,7 @@ class API(api.API):
             return viewers
     @retry(stop=stop_after_attempt(100))
     async def _users(self, user_ids):
-        user_id_chunks = split_into_even_size(user_ids, 100)
-        user_chunks = (self.twitch_client.users(user_ids) for user_ids in user_id_chunks)
-        users = [user.data for users in user_chunks for user in users]
+        users = await self.twitch_client.users(ids=user_ids)
         return [api.User(
                 id = int(user["id"]), 
                 name = user["display_name"], 
@@ -139,9 +147,7 @@ class API(api.API):
                 type = user["type"]) for user in users]
     @retry(stop=stop_after_attempt(100))
     async def _games(self, game_ids):
-        game_id_chunks = split_into_even_size(game_ids, 100)
-        game_chunks = (self.twitch_client.games(id=game_ids) for game_ids in game_id_chunks)
-        games = [game.data for games in game_chunks for game in games]
+        games = await self.twitch_client.games(ids=game_ids)
         games = [api.Game(
             id = int(game["id"]),
             name = game["name"],
@@ -150,12 +156,7 @@ class API(api.API):
         return games
     @retry(stop=stop_after_attempt(100))
     async def _streams(self, user_ids):
-        user_id_chunks = split_into_even_size(user_ids, 100)
-        try:
-            stream_chunks = (self.twitch_client.streams(user_id=user_ids) for user_ids in user_id_chunks)
-            streams = [stream.data for streams in stream_chunks for stream in streams]
-        except twitch.helix.StreamNotFound as e:
-            streams = []
+        streams = await self.twitch_client.streams(user_ids=user_ids)
         unknown_game_ids = [s["game_id"] for s in streams if s["game_id"] and int(s["game_id"]) not in self.game_by_id]
         unknown_games = await self._games(unknown_game_ids)
         for game in unknown_games:
@@ -182,15 +183,18 @@ class API(api.API):
         return streams
     @retry(stop=stop_after_attempt(100))
     async def _top100_streamers_update(self, min_viewers=100):
-        streams = self.twitch_client.streams(language=self.language, first=100)
-        user_ids = [int(stream.data["user_id"]) for stream in streams if int(stream.data["viewer_count"]) >= min_viewers]
+        streams = await self.twitch_client.streams(languages=[self.language], first=100)
+        user_ids = [int(stream["user_id"]) for stream in streams if int(stream["viewer_count"]) >= min_viewers]
         users = await self._users(user_ids)
         for user in users:
             self.user_by_id[user.id] = user
     async def streams(self):
+        print(1)
         if self.chat_manager.error:
             raise self.chat_manager.error
+        print(2)
         await self._top100_streamers_update()
+        print(3)
         streams = await self._streams([user.id for user in self.user_by_id.values()])
         self.save_session()
         return streams

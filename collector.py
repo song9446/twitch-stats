@@ -1,8 +1,11 @@
 from typing import List
+import threading
+import queue
 import asyncio
 import time
 import asyncpg
 import pickle
+from extract_keywords import extract_keywords
 from api import API, Stream, User
 from api import twitch
 
@@ -19,6 +22,45 @@ import tsne
 from multiprocessing.pool import ThreadPool
 
 np.seterr(divide='ignore')
+
+def chat_file_path(id):
+    return "chats/" + str(id)
+def read_last_chats(id):
+    with open(chat_file_path(id), "r") as f:
+        lines = list(filter(None, (line.strip() for line in f)))
+        return lines
+
+class KeywordsManager:
+    def __init__(self, db_args):
+        self.q = queue.Queue()
+        self.error = None
+        def run(self):
+            async def _run():
+                dbconn = await asyncpg.connect(**db_args)
+                while True:
+                    id = self.q.get()
+                    print(f"**** extract keywords start: {id}****")
+                    last_chats = read_last_chats(id)
+                    if not last_chats:
+                        continue
+                    keywords = extract_keywords(last_chats)
+                    print(f"**** extract keywords end: {id}****")
+                    await dbconn.execute(f""" DELETE FROM streamer_recent_chatting_keywords WHERE streamer_id = $1; """, id)
+                    await dbconn.copy_records_to_table("streamer_recent_chatting_keywords", 
+                            columns=["streamer_id", "keyword", "fraction"],
+                            records=[(id, k, f) for k, f in keywords])
+            try:
+                asyncio.run(_run())
+            except Exception as e:
+                print(repr(e))
+                self.error = e
+        t = threading.Thread(target=run, args=(self,))
+        t.daemon = True
+        t.start()
+    def queue(self, id):
+        if self.error:
+            raise self.error
+        self.q.put(id)
 
 @dataclass
 class AdvancedStatisticsManager:
@@ -83,7 +125,7 @@ class AdvancedStatisticsManager:
             similarity_matrix[i, i] = np.inf
         similar_streamers_list = [(ids[i], [(ids[j], similarity_matrix[i, j]) for j in np.argpartition(-similarity_matrix[i], self.similarity_count)[1:self.similarity_count+1]]) for i in range(len(ids))]
         distance_matrix = 1/similarity_matrix
-        pos = tsne.umap(distance_matrix)
+        pos = tsne.umap(distance_matrix, min_dist=0, n_neighbors=min(400,len(ids)-1), random_state=42)
         #pos = tsne.tsne(distance_matrix)
         cluster = hdbscan.HDBSCAN()
         cluster.fit(pos)
@@ -110,9 +152,11 @@ class Collector:
         self.db_args = db_args
         self.streaming_streamers = set()
         self.last_streams = {}
+        self.chats_files = {}
         self.average_viewer_counts = {}
         self.advanced_statistics_manager = AdvancedStatisticsManager(api=api)
-        self.pool = ThreadPool(1)
+        self.keywords_manager = KeywordsManager(db_args)
+        self.pool = ThreadPool(10)
     async def run(self, interval_seconds=60, interval_seconds_for_advacned_statistics_calculate=300):
         self.dbconn = await asyncpg.connect(**self.db_args)
         self.streaming_streamers = set(User(**i) for i in await self.dbconn.fetch("SELECT id, name, login, profile_image_url, offline_image_url, broadcaster_type, description, type FROM streamers WHERE is_streaming = TRUE"))
@@ -210,6 +254,16 @@ class Collector:
         await self.dbconn.copy_records_to_table("stream_changes", 
                 columns=["streamer_id", "time", "viewer_count", "chatter_count", "chatting_speed", "follower_count"],
                 records=[(s.user.id, now, s.viewer_count, len(s.chatters), len(s.chattings)/elapsed_seconds, 0) for s in streams])
+        for s in streams:
+            if s.user.id not in self.chats_files:
+                self.chats_files[s.user.id] = open(chat_file_path(s.user.id), "w+")
+            if s.chattings:
+                self.chats_files[s.user.id].write("\n".join((s.chat for s in s.chattings)) + "\n")
+        for u in streaming_end_users:
+            f = self.chats_files.pop(u.id, None)
+            if f: 
+                f.close()
+                self.keywords_manager.queue(u.id)
         self.last_streams = {s.user.id: s for s in streams}
         print("collect end", datetime.datetime.now())
         self.advanced_statistics_manager.update(streams, elapsed_seconds)
@@ -218,7 +272,7 @@ class Collector:
 
 async def main(op):
     client_args = dict(client_id = "6zqny3p0ft2js766jptev3mvp0ay51",
-                   bearer_token="pcjch55ezhaulaptylu85iq2ni4x6t")
+                   client_secret="pcjch55ezhaulaptylu85iq2ni4x6t")
     db_args = dict(user='postgres',
             password='Thelifeisonlyonce',
             database='twitch_stats',
@@ -229,7 +283,7 @@ async def main(op):
         telegram_bot.send_message("start tsu.gg twitch stream statistics collector")
         while True:
             try:
-                api = twitch.API(client_args)
+                api = await twitch.API.gen(client_args)
                 collector = Collector(api, db_args)
                 await collector.run(60, 60)
             except Exception as e:

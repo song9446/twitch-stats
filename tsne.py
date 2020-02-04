@@ -5,15 +5,14 @@ import sklearn
 from tqdm import tqdm
 from scipy.spatial.distance import cdist
 from lapjv import lapjv
-from PIL import Image
 import umap as UMAP
 
 MAX = 10000.*10000.*100.
-def umap(distance_matrix):
+def umap(distance_matrix, **parameters):
     v = np.minimum(MAX, distance_matrix)
     #n = np.square(int(np.ceil(np.sqrt(v.shape[0]))))
     #v = np.pad(v, ((0,n-v.shape[0]), (0, n-v.shape[0])), mode='constant', constant_values=MAX)
-    v = UMAP.UMAP(metric="precomputed").fit_transform(v)
+    v = UMAP.UMAP(metric="precomputed", **parameters).fit_transform(v)
     return v
     #out = np.ones((out_dim*out_res, out_dim*out_res, 3))
 def tsne(distance_matrix):
