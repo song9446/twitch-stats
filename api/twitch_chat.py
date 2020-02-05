@@ -203,14 +203,13 @@ class Client:
                     raise StopAsyncIteration
 
 async def test():
+    import sys
+    sys.path.append('./')
     from util import MergedStream
     cs = [await Client.connect("handongsuk"), await Client.connect("saddummy"), await Client.connect("dogswellfish"), await Client.connect("flurry1989"), await Client.connect("loltyler1")]
     merged = MergedStream(*cs)
     async for msg in merged:
-        if msg: print(msg.type, msg.channel, msg.user, msg.message)
-        if cs[3]:
-            await cs[3].close()
-            cs[3] = None
+        if msg: print(msg.tags, msg.channel, msg.user, msg.message)
 
     #msg = await asyncio.wait_for(c.__anext__(), timeout=0.0001)
     #print(msg.type, msg.channel, msg.user, msg.message)

@@ -5,6 +5,7 @@ import asyncio
 import time
 import asyncpg
 import pickle
+from collections import defaultdict
 from extract_keywords import extract_keywords
 from api import API, Stream, User
 from api import twitch
@@ -146,6 +147,15 @@ class AdvancedStatisticsManager:
         print("calculate statistics end", datetime.datetime.now())
         return similar_streamers_list, pos, cluster
 
+
+class StreamInfo:
+    __slots__ = 'average_viewer_count', 'chats_count', 'subscribe_chats_count', 'subscribers' 
+    def __init__():
+        self.average_viewer_count = [0, 0]
+        self.chats_count = 0
+        self.subscribe_chats_count = 0
+        self.subscribers = defaultdict(set)
+
 class Collector:
     def __init__(self, api: API, db_args):
         self.api = api
@@ -153,14 +163,14 @@ class Collector:
         self.streaming_streamers = set()
         self.last_streams = {}
         self.chats_files = {}
-        self.average_viewer_counts = {}
+        self.stream_infos = defaultdict(StreamInfo)
         self.advanced_statistics_manager = AdvancedStatisticsManager(api=api)
         self.keywords_manager = KeywordsManager(db_args)
         self.pool = ThreadPool(10)
     async def run(self, interval_seconds=60, interval_seconds_for_advacned_statistics_calculate=300):
         self.dbconn = await asyncpg.connect(**self.db_args)
         self.streaming_streamers = set(User(**i) for i in await self.dbconn.fetch("SELECT id, name, login, profile_image_url, offline_image_url, broadcaster_type, description, type FROM streamers WHERE is_streaming = TRUE"))
-        self.average_viewer_counts = {}
+        self.stream_infos = defaultdict(StreamInfo)
         time_elapsed = interval_seconds
         interval = datetime.timedelta(seconds=interval_seconds)
         interval_for_advacned_statistics_calculate = datetime.timedelta(seconds=interval_seconds_for_advacned_statistics_calculate)
@@ -242,15 +252,40 @@ class Collector:
                 columns=["streamer_id", "time", "language", "game_id", "title", "started_at"], 
                 records=[(s.user.id, now, s.language, s.game.id if s.game else None, s.title, s.started_at) for s in metadata_changed_streams])
         for s in streams:
-            self.average_viewer_counts.setdefault(s.user.id, [0, 0])
-            self.average_viewer_counts[s.user.id][0] += s.viewer_count * elapsed_seconds
-            self.average_viewer_counts[s.user.id][1] += elapsed_seconds
+            info = self.stream_infos[s.user.id]
+            info.average_viewer_counts[0] += s.viewer_count * elapsed_seconds
+            info.average_viewer_counts[1] += elapsed_seconds
+            info.subscribe_chats_count += len(c for c in s.chattings if c.is_subscriber)
+            info.chats_count += len(s.chattings)
+            for c in s.chattings:
+                info.subscribers[c.subscribe_month].add(c.user_id)
         await self.dbconn.executemany("""
-            UPDATE streamers SET average_viewer_count = average_viewer_count * 0.9 + $1 * 0.1 WHERE id = $2""", 
-            [(self.average_viewer_counts[u.id][0]/self.average_viewer_counts[u.id][1], u.id) for u in streaming_end_users if (u.id in self.average_viewer_counts) and self.average_viewer_counts[u.id][1]])
-        for u in streaming_end_users: 
-            if u.id in self.average_viewer_counts: 
-                self.average_viewer_counts.pop(u.id)
+            UPDATE streamers SET average_viewer_count = (CASE
+                WHEN average_viewer_count <> 0 THEN 
+                    average_viewer_count * 0.9 + $1 * 0.1
+                ELSE $1
+                END)
+                WHERE id = $2""", 
+            [(self.stream_infos[u.id].average_viewer_counts[0]/self.stream_infos[u.id].average_viewer_counts[1], u.id) for u in streaming_end_users if (u.id in self.stream_infos) and self.stream_infos[u.id].average_viewer_counts[1]])
+        await self.dbconn.executemany("""
+            UPDATE streamers SET average_subscriber_ratio = (CASE
+                WHEN average_subscriber_ratio <> 0 THEN 
+                    average_subscriber_ratio * 0.9 + $1 * 0.1
+                ELSE $1
+                END)
+                WHERE id = $2""",
+            [(self.stream_infos[u.id].subscribe_chats_count/self.stream_infos[u.id].chats_count, u.id) for u in streaming_end_users if (u.id in self.stream_infos) and self.stream_infos[u.id].chats_count])
+        subscribers_total = {u.id: sum(self.stream_infos[u.id].subscribers.values()) for u in streaming_end_users if u.id in self.stream_infos}
+        await self.dbconn.executemany("""
+            UPDATE streamers_average_subscriber_distribution SET ratio = ratio * 0.9 WHERE streamer_id = $1;
+        """, [(u.id,) for u in streaming_end_users])
+        await self.dbconn.executemany("""
+            INSERT INTO streamers_average_subscriber_distribution
+            (streamer_id, month, ratio) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (streamer_id, month) DO
+            UPDATE SET ratio = ratio + $3 * 0.1 """,
+            [(u.id, month, num/subscribers_total[u.id]) for u in streaming_end_users if subscribers_total.get(u.id, 0) for month, num in self.stream_infos[u.id].subscribers.items()])
         await self.dbconn.copy_records_to_table("stream_changes", 
                 columns=["streamer_id", "time", "viewer_count", "chatter_count", "chatting_speed", "follower_count"],
                 records=[(s.user.id, now, s.viewer_count, len(s.chatters), len(s.chattings)/elapsed_seconds, 0) for s in streams])
@@ -264,6 +299,8 @@ class Collector:
             if f: 
                 f.close()
                 self.keywords_manager.queue(u.id)
+            if u.id in self.stream_infos: 
+                self.stream_infos.pop(u.id)
         self.last_streams = {s.user.id: s for s in streams}
         print("collect end", datetime.datetime.now())
         self.advanced_statistics_manager.update(streams, elapsed_seconds)

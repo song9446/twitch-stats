@@ -66,8 +66,13 @@ class ChatManager:
                                 #self.chat_counts.setdefault(msg.channel, 0)
                                 #self.chat_counts[msg.channel] += 1
                                 self.chats.setdefault(msg.channel, [])
-                                self.chats[msg.channel].append(api.Chat(msg.user, msg.message))
-                        time.sleep(1)
+                                self.chats[msg.channel].append(api.Chat(
+                                    user_id = msg.user, 
+                                    chat = msg.message, 
+                                    is_subscriber=int(msg.tags["subscriber"]), 
+                                    subscribe_month=int(next((s for s in msg.tags["badge-info"].split(",") if s.startswith("subscriber")), "/-1").split("/")[1])
+                                    ))
+                        await asyncio.sleep(1)
                 except Exception as e:
                     self.error = e
                     raise e

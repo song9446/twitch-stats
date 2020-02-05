@@ -35,6 +35,8 @@ class Chat:
     user_id: str
     chat: str
     name: str = None
+    is_subscriber: bool = False
+    subscribe_month: int = 0
     is_follower: bool = False
     is_female: bool = None
     is_fanclub: bool = None

@@ -53,14 +53,11 @@ class MergedStream:
     it assume that the iterator is terminated
     and ignore the result of None
     '''
-    def __init__(self, size=0, *iterables):
+    def __init__(self, *iterables):
         self._iterables = list(iterables)
         self._wakeup = asyncio.Event()
-        self._available_switch = asyncio.Event()
-        self._available_switch.set()
         self.done = deque()
         self.next_futs = {}
-        self.size = size
     def _add_iters(self, next_futs, on_done):
         while self._iterables:
             it = self._iterables.pop()
@@ -68,16 +65,12 @@ class MergedStream:
             nfut = asyncio.ensure_future(it.__anext__())
             nfut.add_done_callback(on_done)
             next_futs[nfut] = it
-            if self.size and len(next_futs) >= self.size:
-                self._available_switch.clear()
         return next_futs
     async def __aiter__(self):
         done = self.done
         next_futs = self.next_futs
         def on_done(nfut):
             self.done.append((nfut, next_futs.pop(nfut)))
-            if len(next_futs) < self.size:
-                self._available_switch.set()
             #done[nfut] = next_futs.pop(nfut)
             self._wakeup.set()
         self._add_iters(next_futs, on_done)
@@ -106,19 +99,13 @@ class MergedStream:
     def append(self, new_iter):
         self._iterables.append(new_iter)
         self._wakeup.set()
-    async def available(self):
-        await self._available_switch.wait()
     def append_future(self, new_future):
         def on_done(nfut):
             self.done.append((nfut, self.next_futs.pop(nfut)))
-            if len(self.next_futs) < self.size:
-                self._available_switch.set()
             self._wakeup.set()
         nfut = asyncio.ensure_future(new_future)
         nfut.add_done_callback(on_done)
         self.next_futs[nfut] = None
-        if self.size and len(self.next_futs) >= self.size:
-            self._available_switch.clear()
 
 async def wrapper(coru, semaphore, sec):
     async with semaphore:
@@ -141,7 +128,6 @@ async def test():
     m.append_future(wait(2))
     m.append_future(wait(3))
     async for i in m:
-        await m.available()
         print(i)
         m.append_future(wait(3))
         m.append_future(wait(2))
