@@ -55,6 +55,7 @@ class Stream:
     chatter_count: int = 0
     chatters: List[Union[str, object]] = field(default_factory=list)
     chattings: List[Chat] = field(default_factory=list)
+    follower_count: int = 0
     main_viewer_count: int = 0
     sub_viewer_count: int = 0
     join_viewer_count: int = 0

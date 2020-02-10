@@ -11,11 +11,12 @@ import time
 import datetime
 from shutil import copyfile
 from util import split_into_even_size, ExpiredSet, MergedStream
+from collections import defaultdict
 
 class ChatManager:
     def __init__(self):
         #self.chat_counts = {}
-        self.chats = {}
+        self.chats = defaultdict(list)
         self.queue = queue.Queue()
         self.ADD = 0
         self.REMOVE = 1
@@ -65,7 +66,6 @@ class ChatManager:
                             if msg.channel in twitch_chats:
                                 #self.chat_counts.setdefault(msg.channel, 0)
                                 #self.chat_counts[msg.channel] += 1
-                                self.chats.setdefault(msg.channel, [])
                                 self.chats[msg.channel].append(api.Chat(
                                     user_id = msg.user, 
                                     chat = msg.message, 
@@ -94,7 +94,7 @@ class ChatManager:
     #    return chat_counts
     def drain_chats(self):
         chats = self.chats
-        self.chats = {}
+        self.chats = defaultdict(list)
         return chats
 
 class API(api.API):
@@ -159,7 +159,7 @@ class API(api.API):
             box_art_url = game["box_art_url"],
             ) for game in games]
         return games
-    @retry(stop=stop_after_attempt(100))
+    #@retry(stop=stop_after_attempt(100))
     async def _streams(self, user_ids):
         streams = await self.twitch_client.streams(user_ids=user_ids)
         unknown_game_ids = [s["game_id"] for s in streams if s["game_id"] and int(s["game_id"]) not in self.game_by_id]
@@ -181,9 +181,14 @@ class API(api.API):
         self.chat_manager.substract([u.login for u in (self.streaming_users - streaming_users)])
         self.chat_manager.extend([u.login for u in streaming_users])
         self.streaming_users = streaming_users
+        chatters = await asyncio.gather(*[self._chatters(s.user.login) for s in streams])
+        print("follower count start")
+        follower_counts = await asyncio.gather(*[self.twitch_client.followers(s.user.id, 1) for s in streams])
+        print("follower coutn end")
         chats = self.chat_manager.drain_chats()
-        for s in streams:
-            s.chatters = (await self._chatters(s.user.login)) or []
+        for i, s in enumerate(streams):
+            s.chatters = chatters[i] or []
+            s.follower_count = int(follower_counts[i]["total"])
             s.chattings = chats.get(s.user.login, [])
         return streams
     @retry(stop=stop_after_attempt(100))
@@ -194,12 +199,14 @@ class API(api.API):
         for user in users:
             self.user_by_id[user.id] = user
     async def streams(self):
-        print(1)
         if self.chat_manager.error:
             raise self.chat_manager.error
-        print(2)
         await self._top100_streamers_update()
-        print(3)
         streams = await self._streams([user.id for user in self.user_by_id.values()])
+        streaming_users = await self._users([s.user.id for s in streams])
+        for user in streaming_users:
+            self.user_by_id[user.id] = user
+        for stream in streams:
+            stream.user = self.user_by_id[stream.user.id] if stream.user.id in self.user_by_id else None
         self.save_session()
         return streams

@@ -1,6 +1,4 @@
 STOP_WORDS = list(set("""
-ㅇㅇ
-ㄹㅇ
 그래
 제가
 같음
@@ -86,7 +84,6 @@ STOP_WORDS = list(set("""
 나오는
 나중에
 진짜
-ㅇㅇ
 존나
 그냥
 근데
@@ -212,4 +209,7 @@ STOP_WORDS = list(set("""
 jpg
 txt
 gif
+다들
+있네
+있다
 """.split()))

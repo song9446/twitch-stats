@@ -28,7 +28,7 @@ def normalize(t):
     t = re.sub('[?]{3,}', '??', t)
     t = re.sub('[!]{3,}', '!!', t)
     t = re.sub('[ㅅ]{3,}', 'ㅅㅅ', t)
-    t = re.sub('[ㅋㄱㅎz]{2,}', ' ㅋㅋ ', t)
+    t = re.sub('[ㅋㄱㅎz]{2,}', 'ㅋㅋ', t)
     t = re.sub('[ㅇ]{3,}', 'ㅇㅇ', t)
     #t = ''.join(c for i,c in enumerate(t) if i<3 or not (t[i-3] == t[i-2] == t[i-1] == t[0])).split()
     t = list(dict.fromkeys(t.split()).keys())
@@ -45,4 +45,5 @@ def extract_keywords(texts):
     return keywords
 
 if __name__ == "__main__":
-    print(extract_keywords(["가지마 가지마 가지마ㅋㅋ 가지마~~~~ 아아아아~~~지이익~~ 너~~를 위 ~~~~해~~~"]))
+    print(normalize("ㅋㅋㅋㅋㅋㅋㅋ ㅋㅋ 말이되나 이게ㅋㅋㅋ"))
+    #print(extract_keywords(["가지마 가지마 가지마ㅋㅋ 가지마~~~~ 아아아아~~~지이익~~ 너~~를 위 ~~~~해~~~"]))

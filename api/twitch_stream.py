@@ -17,7 +17,7 @@ class Helix:
             'Client-ID': client_id,
             })
         self.headers = {}
-        self.bearer_token_expired_at = time.time() + 100000000000
+        self.bearer_token_expired_at = time.time()-1
         await self.try_update_bearer_token()
         return self
     async def try_update_bearer_token(self):
@@ -37,7 +37,7 @@ class Helix:
         await self.try_update_bearer_token()
         if self.ratelimit_remaining == 0:
             await asyncio.sleep(self.ratelimit_reset - time.time())
-        async with self.session.get(url) as res:
+        async with self.session.get(url, headers=self.headers) as res:
             if res.status == 429:
                 self.ratelimit_remaining = 0
                 await asyncio.sleep(self.ratelimit_reset - time.time())
@@ -70,8 +70,8 @@ class Helix:
         return [d for res in res_chunks for d in res["data"]]
     async def following(self, from_id):
         return await self.get(f"https://api.twitch.tv/helix/users/follows?from_id={from_id}&first=100")
-    async def followed(self, to_id):
-        return await self.get(f"https://api.twitch.tv/helix/users/follows?to_id={from_id}&first=100")
+    async def followers(self, to_id, first=100):
+        return await self.get(f"https://api.twitch.tv/helix/users/follows?to_id={to_id}&first={first}")
     async def chatters(self, channel):
         async with self.session.get(f"https://tmi.twitch.tv/group/user/{channel}/chatters") as resp:
             json = await resp.json()
@@ -87,10 +87,11 @@ async def test():
         "client_secret": "0gd9xfy66fa2zq6vps0a6fqqvcxp3z",
     }
     h = await Helix.gen(**client_args)
-    print(await h.streams(first=2, languages=["ko"], user_logins=["saddummy"]))
-    users = await h.games([0])
-    print(users)
-    #print(await h.following(users[0]["id"]))
+    print(await h.users(ids=[137734987]))
+    #print(await h.streams(first=2, languages=["ko"], user_logins=["saddummy"]))
+    #users = await h.games([0])
+    #print(users)
+    print(await h.followers(30904062, 1))
 if __name__ == "__main__":
     asyncio.run(test())
 

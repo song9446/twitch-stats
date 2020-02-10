@@ -44,7 +44,11 @@ class KeywordsManager:
                     last_chats = read_last_chats(id)
                     if not last_chats:
                         continue
-                    keywords = extract_keywords(last_chats)
+                    try:
+                        keywords = extract_keywords(last_chats)
+                    except Exception as e:
+                        print(repr(e))
+                        continue
                     print(f"**** extract keywords end: {id}****")
                     await dbconn.execute(f""" DELETE FROM streamer_recent_chatting_keywords WHERE streamer_id = $1; """, id)
                     await dbconn.copy_records_to_table("streamer_recent_chatting_keywords", 
@@ -126,7 +130,7 @@ class AdvancedStatisticsManager:
             similarity_matrix[i, i] = np.inf
         similar_streamers_list = [(ids[i], [(ids[j], similarity_matrix[i, j]) for j in np.argpartition(-similarity_matrix[i], self.similarity_count)[1:self.similarity_count+1]]) for i in range(len(ids))]
         distance_matrix = 1/similarity_matrix
-        pos = tsne.umap(distance_matrix, min_dist=0, n_neighbors=min(400,len(ids)-1), random_state=42)
+        pos = tsne.umap(distance_matrix, min_dist=0, n_neighbors=min(200,len(ids)-1), random_state=42)
         #pos = tsne.tsne(distance_matrix)
         cluster = hdbscan.HDBSCAN()
         cluster.fit(pos)
@@ -148,29 +152,61 @@ class AdvancedStatisticsManager:
         return similar_streamers_list, pos, cluster
 
 
+class MigrationManager:
+    def __init__(self, interval=3600):
+        self.last_chatter_to_streamer_id = defaultdict(set)
+        self.interval = interval
+        self.last_update_time = time.time()*10
+        self.ready_at = time.time()
+    def migrations(self, streams):
+        if time.time() < self.ready_at:
+            print("migration not ready")
+            return {}
+        else: 
+            self.ready_at = self.ready_at + self.interval
+        chatter_to_streamer_id = defaultdict(set)
+        for s in streams:
+            for c in s.chatters:
+                chatter_to_streamer_id[c].add(s.user.id)
+        migrations = defaultdict(int)
+        for chatter, streamer_ids in self.last_chatter_to_streamer_id.items():
+            new_streamer_ids = chatter_to_streamer_id[chatter]
+            incoming = new_streamer_ids - streamer_ids
+            outgoing = streamer_ids - new_streamer_ids
+            for i in incoming:
+                for o in outgoing:
+                    migrations[(i, o)] += 1 
+        self.last_chatter_to_streamer_id = chatter_to_streamer_id
+        return migrations
+            
+
+
 class StreamInfo:
-    __slots__ = 'average_viewer_count', 'chats_count', 'subscribe_chats_count', 'subscribers' 
-    def __init__():
+    __slots__ = 'average_viewer_count', 'chats_count', 'subscribe_chats_count', 'subscribers' , 'game_hours', 'last_stream'
+    def __init__(self):
         self.average_viewer_count = [0, 0]
         self.chats_count = 0
         self.subscribe_chats_count = 0
         self.subscribers = defaultdict(set)
+        self.game_hours = defaultdict(float)
+        self.last_stream = None
 
 class Collector:
     def __init__(self, api: API, db_args):
         self.api = api
         self.db_args = db_args
         self.streaming_streamers = set()
-        self.last_streams = {}
         self.chats_files = {}
         self.stream_infos = defaultdict(StreamInfo)
         self.advanced_statistics_manager = AdvancedStatisticsManager(api=api)
+        self.migration_manager = MigrationManager()
         self.keywords_manager = KeywordsManager(db_args)
         self.pool = ThreadPool(10)
-    async def run(self, interval_seconds=60, interval_seconds_for_advacned_statistics_calculate=300):
+    async def run(self, interval_seconds=60, interval_seconds_for_advacned_statistics_calculate=300, interval_seconds_for_migration_update=3600):
         self.dbconn = await asyncpg.connect(**self.db_args)
         self.streaming_streamers = set(User(**i) for i in await self.dbconn.fetch("SELECT id, name, login, profile_image_url, offline_image_url, broadcaster_type, description, type FROM streamers WHERE is_streaming = TRUE"))
         self.stream_infos = defaultdict(StreamInfo)
+        self.migration_manager = MigrationManager(interval_seconds_for_migration_update)
         time_elapsed = interval_seconds
         interval = datetime.timedelta(seconds=interval_seconds)
         interval_for_advacned_statistics_calculate = datetime.timedelta(seconds=interval_seconds_for_advacned_statistics_calculate)
@@ -246,19 +282,21 @@ class Collector:
             [(u.id,) for u in streaming_end_users])
         await self.dbconn.copy_records_to_table("stream_ranges",
                 columns=["streamer_id", "range"],
-                records=[(u.id, asyncpg.Range(self.last_streams[u.id].started_at, now)) for u in streaming_end_users if u.id in self.last_streams])
-        metadata_changed_streams = [s for s in streams if not s.metadata_eq(self.last_streams.get(s.user.id))]
+                records=[(u.id, asyncpg.Range(self.stream_infos[u.id].last_stream.started_at, now)) for u in streaming_end_users if u.id in self.stream_infos and self.stream_infos[u.id].last_stream])
+        metadata_changed_streams = [s for s in streams if not s.metadata_eq(self.stream_infos[s.user.id].last_stream)]
         await self.dbconn.copy_records_to_table("stream_metadata_changes", 
                 columns=["streamer_id", "time", "language", "game_id", "title", "started_at"], 
                 records=[(s.user.id, now, s.language, s.game.id if s.game else None, s.title, s.started_at) for s in metadata_changed_streams])
         for s in streams:
             info = self.stream_infos[s.user.id]
-            info.average_viewer_counts[0] += s.viewer_count * elapsed_seconds
-            info.average_viewer_counts[1] += elapsed_seconds
-            info.subscribe_chats_count += len(c for c in s.chattings if c.is_subscriber)
+            info.average_viewer_count[0] += s.viewer_count * elapsed_seconds
+            info.average_viewer_count[1] += elapsed_seconds
+            info.subscribe_chats_count += len([c for c in s.chattings if c.is_subscriber])
             info.chats_count += len(s.chattings)
             for c in s.chattings:
                 info.subscribers[c.subscribe_month].add(c.user_id)
+            if s.game: 
+                info.game_hours[s.game.id] += elapsed_seconds/3600
         await self.dbconn.executemany("""
             UPDATE streamers SET average_viewer_count = (CASE
                 WHEN average_viewer_count <> 0 THEN 
@@ -266,7 +304,7 @@ class Collector:
                 ELSE $1
                 END)
                 WHERE id = $2""", 
-            [(self.stream_infos[u.id].average_viewer_counts[0]/self.stream_infos[u.id].average_viewer_counts[1], u.id) for u in streaming_end_users if (u.id in self.stream_infos) and self.stream_infos[u.id].average_viewer_counts[1]])
+            [(self.stream_infos[u.id].average_viewer_count[0]/self.stream_infos[u.id].average_viewer_count[1], u.id) for u in streaming_end_users if (u.id in self.stream_infos) and self.stream_infos[u.id].average_viewer_count[1]])
         await self.dbconn.executemany("""
             UPDATE streamers SET average_subscriber_ratio = (CASE
                 WHEN average_subscriber_ratio <> 0 THEN 
@@ -275,7 +313,7 @@ class Collector:
                 END)
                 WHERE id = $2""",
             [(self.stream_infos[u.id].subscribe_chats_count/self.stream_infos[u.id].chats_count, u.id) for u in streaming_end_users if (u.id in self.stream_infos) and self.stream_infos[u.id].chats_count])
-        subscribers_total = {u.id: sum(self.stream_infos[u.id].subscribers.values()) for u in streaming_end_users if u.id in self.stream_infos}
+        subscribers_total = {u.id: sum(len(subscribers) for subscribers in self.stream_infos[u.id].subscribers.values()) for u in streaming_end_users if u.id in self.stream_infos}
         await self.dbconn.executemany("""
             UPDATE streamers_average_subscriber_distribution SET ratio = ratio * 0.9 WHERE streamer_id = $1;
         """, [(u.id,) for u in streaming_end_users])
@@ -284,16 +322,28 @@ class Collector:
             (streamer_id, month, ratio) 
             VALUES ($1, $2, $3)
             ON CONFLICT (streamer_id, month) DO
-            UPDATE SET ratio = ratio + $3 * 0.1 """,
-            [(u.id, month, num/subscribers_total[u.id]) for u in streaming_end_users if subscribers_total.get(u.id, 0) for month, num in self.stream_infos[u.id].subscribers.items()])
+            UPDATE SET ratio = streamers_average_subscriber_distribution.ratio + EXCLUDED.ratio * 0.1 """,
+            [(u.id, month, len(subscribers)/subscribers_total[u.id]) for u in streaming_end_users if subscribers_total.get(u.id, 0) for month, subscribers in self.stream_infos[u.id].subscribers.items()])
+        await self.dbconn.executemany("""
+            UPDATE streamers_average_game_distribution SET hours = hours * 0.9 WHERE streamer_id = $1;
+        """, [(u.id,) for u in streaming_end_users])
+        await self.dbconn.executemany("""
+            INSERT INTO streamers_average_game_distribution
+            (streamer_id, game_id, hours) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (streamer_id, game_id) DO
+            UPDATE SET hours = streamers_average_game_distribution.hours + EXCLUDED.hours """,
+            [(u.id, game_id, hours) for u in streaming_end_users if u.id in self.stream_infos for game_id, hours in self.stream_infos[u.id].game_hours.items()])
         await self.dbconn.copy_records_to_table("stream_changes", 
                 columns=["streamer_id", "time", "viewer_count", "chatter_count", "chatting_speed", "follower_count"],
-                records=[(s.user.id, now, s.viewer_count, len(s.chatters), len(s.chattings)/elapsed_seconds, 0) for s in streams])
+                records=[(s.user.id, now, s.viewer_count, len(s.chatters), len(s.chattings)/elapsed_seconds, s.follower_count) for s in streams])
         for s in streams:
             if s.user.id not in self.chats_files:
                 self.chats_files[s.user.id] = open(chat_file_path(s.user.id), "w+")
             if s.chattings:
                 self.chats_files[s.user.id].write("\n".join((s.chat for s in s.chattings)) + "\n")
+        for s in streams:
+            self.stream_infos[s.user.id].last_stream = s
         for u in streaming_end_users:
             f = self.chats_files.pop(u.id, None)
             if f: 
@@ -301,10 +351,19 @@ class Collector:
                 self.keywords_manager.queue(u.id)
             if u.id in self.stream_infos: 
                 self.stream_infos.pop(u.id)
-        self.last_streams = {s.user.id: s for s in streams}
         print("collect end", datetime.datetime.now())
         self.advanced_statistics_manager.update(streams, elapsed_seconds)
         print("advanced statistics update end", datetime.datetime.now())
+        migrations = self.migration_manager.migrations(streams)
+        if migrations:
+            #print("migration_len:", len(migrations))
+            #mean = sum(v for v in migrations.values())/len(migrations)
+            #print("migration_mean:", mean)
+            #print("migration_var:", sum((v-mean)*(v-mean) for v in migrations.values())/len(migrations))
+            print("migration-len", len([(source, dest, count, now) for (source, dest), count in migrations.items() if count >= 5]))
+            await self.dbconn.copy_records_to_table("viewer_migration_counts", 
+                    columns=["source", "destination", "migration_count", "time"],
+                    records=[(source, dest, count, now) for (source, dest), count in migrations.items() if count >= 5])
 
 
 async def main(op):
@@ -322,7 +381,7 @@ async def main(op):
             try:
                 api = await twitch.API.gen(client_args)
                 collector = Collector(api, db_args)
-                await collector.run(60, 60)
+                await collector.run(60, 3600, 3600)
             except Exception as e:
                 raise e
                 telegram_bot.send_message("restart collector due to:")
