@@ -131,6 +131,10 @@ class API(api.API):
             session = {"user_by_id": self.user_by_id, "game_by_id": self.game_by_id}
             pickle.dump(session, f, protocol=-1)
     @retry(stop=stop_after_attempt(100))
+    async def _followers_count(self, user_id):
+        res = await self.twitch_client.followers(user_id, 1)
+        return int(res["total"])
+    @retry(stop=stop_after_attempt(100))
     async def _chatters(self, channel):
         async with self.session.get(f"https://tmi.twitch.tv/group/user/{channel}/chatters") as resp:
             json = await resp.json()
@@ -159,7 +163,7 @@ class API(api.API):
             box_art_url = game["box_art_url"],
             ) for game in games]
         return games
-    #@retry(stop=stop_after_attempt(100))
+    @retry(stop=stop_after_attempt(100))
     async def _streams(self, user_ids):
         streams = await self.twitch_client.streams(user_ids=user_ids)
         unknown_game_ids = [s["game_id"] for s in streams if s["game_id"] and int(s["game_id"]) not in self.game_by_id]
@@ -183,25 +187,25 @@ class API(api.API):
         self.streaming_users = streaming_users
         chatters = await asyncio.gather(*[self._chatters(s.user.login) for s in streams])
         print("follower count start")
-        follower_counts = await asyncio.gather(*[self.twitch_client.followers(s.user.id, 1) for s in streams])
+        follower_counts = await asyncio.gather(*[self._followers_count(s.user.id) for s in streams])
         print("follower coutn end")
         chats = self.chat_manager.drain_chats()
         for i, s in enumerate(streams):
             s.chatters = chatters[i] or []
-            s.follower_count = int(follower_counts[i]["total"])
+            s.follower_count = follower_counts[i] or 0
             s.chattings = chats.get(s.user.login, [])
         return streams
     @retry(stop=stop_after_attempt(100))
-    async def _top100_streamers_update(self, min_viewers=100):
-        streams = await self.twitch_client.streams(languages=[self.language], first=100)
-        user_ids = [int(stream["user_id"]) for stream in streams if int(stream["viewer_count"]) >= min_viewers]
+    async def _top100_streamers_update(self, min_viewer_count):
+        streams = await self.twitch_client.streams(languages=[self.language], min_viewer_count=min_viewer_count)
+        user_ids = [int(stream["user_id"]) for stream in streams]
         users = await self._users(user_ids)
         for user in users:
             self.user_by_id[user.id] = user
     async def streams(self):
         if self.chat_manager.error:
             raise self.chat_manager.error
-        await self._top100_streamers_update()
+        await self._top100_streamers_update(min_viewer_count=25)
         streams = await self._streams([user.id for user in self.user_by_id.values()])
         streaming_users = await self._users([s.user.id for s in streams])
         for user in streaming_users:

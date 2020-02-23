@@ -59,9 +59,20 @@ class Helix:
         params_chunks = split_into_even_size(ids, 100)
         res_chunks = await asyncio.gather(*(self.get(f"https://api.twitch.tv/helix/games?{'&'.join('id='+str(param) for param in params)}") for params in params_chunks))
         return [d for res in res_chunks for d in res["data"]]
-    async def streams(self, first=100, languages=[], user_ids=[], user_logins=[]):
+    async def _streams(self, url, min_viewer_count):
+        data = []
+        cursor = None
+        while True:
+            res = await self.get(url if not cursor else url + "&after=" + cursor)
+            data.extend([d for d in res["data"] if int(d["viewer_count"]) >= min_viewer_count])
+            if not res["data"] or int(res["data"][-1]["viewer_count"]) < min_viewer_count:
+                break
+            cursor = res["pagination"]["cursor"]
+        return data
+    async def streams(self, first=100, languages=[], user_ids=[], user_logins=[], min_viewer_count=25):
         if not user_ids and not user_logins:
-            return (await self.get(f"https://api.twitch.tv/helix/streams?first={first}" + "".join(f'&language={l}' for l in languages)))["data"]
+            return (await self._streams(f"https://api.twitch.tv/helix/streams?first={first}" + "".join(f'&language={l}' for l in languages), min_viewer_count))
+            #return (await self.get(f"https://api.twitch.tv/helix/streams?first={first}" + "".join(f'&language={l}' for l in languages)))["data"]
         user_ids = list(map(int, user_ids))
         params = user_logins + user_ids
         params_chunks = split_into_even_size(params, 100)
@@ -87,11 +98,13 @@ async def test():
         "client_secret": "0gd9xfy66fa2zq6vps0a6fqqvcxp3z",
     }
     h = await Helix.gen(**client_args)
-    print(await h.users(ids=[137734987]))
+    #print(len(await h.streams(languages=["ko"], min_viewer_count = 25)))
+    print(await h.followers(103825127, first=1))
+    #print(await h.users(ids=[137734987]))
     #print(await h.streams(first=2, languages=["ko"], user_logins=["saddummy"]))
     #users = await h.games([0])
     #print(users)
-    print(await h.followers(30904062, 1))
+    #print(await h.followers(30904062, 1))
 if __name__ == "__main__":
     asyncio.run(test())
 
