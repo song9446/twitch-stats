@@ -3,7 +3,7 @@
 asyncpg
 aiohttp
 #irc
-tqdm==4.19.5
+tqdm==4.66.3
 lapjv
 #pillow
 scipy
